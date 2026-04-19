@@ -4,7 +4,11 @@ import {
   Hash, Calendar, Palette, LogIn
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { supabase } from './supabase';
+import { 
+  collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, 
+  query, orderBy, serverTimestamp 
+} from 'firebase/firestore';
+import { db } from './firebase';
 import './App.css';
 
 const COLORS = [
@@ -21,42 +25,31 @@ function App() {
   const [searchTerm, setSearchTerm] = useState('');
   const [showNoteModal, setShowNoteModal] = useState(false);
   const [newNoteData, setNewNoteData] = useState({ title: '', color: 'blue', tags: '' });
-  const [isError, setIsError] = useState(false);
+  const [isConfigured, setIsConfigured] = useState(true);
 
-  // Supabase Real-time + Initial Load
+  // Firestore Real-time Listener
   useEffect(() => {
-    fetchNotes();
-
-    const channel = supabase
-      .channel('schema-db-changes')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'notes' },
-        () => {
-          fetchNotes();
+    try {
+      const q = query(collection(db, 'notes'), orderBy('lastModified', 'desc'));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const notesData = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data(),
+          lastModified: doc.data().lastModified?.toMillis() || Date.now()
+        }));
+        setNotes(notesData);
+        setIsConfigured(true);
+      }, (error) => {
+        console.error("Firebase Error:", error);
+        if (error.code === 'permission-denied' || error.message.includes('apiKey')) {
+          setIsConfigured(false);
         }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, []);
-
-  const fetchNotes = async () => {
-    const { data, error } = await supabase
-      .from('notes')
-      .select('*')
-      .order('last_modified', { ascending: false });
-    
-    if (error) {
-      console.error("Supabase Error:", error);
-      setIsError(true);
-    } else {
-      setNotes(data || []);
-      setIsError(false);
+      });
+      return () => unsubscribe();
+    } catch (e) {
+      setIsConfigured(false);
     }
-  };
+  }, []);
 
   const activeNote = useMemo(() => notes.find(n => n.id === activeNoteId), [notes, activeNoteId]);
 
@@ -71,53 +64,55 @@ function App() {
   }, [notes, searchTerm]);
 
   const handleCreateNote = async () => {
-    const note = {
-      title: newNoteData.title || 'Untitled Note',
-      content: '',
-      color: newNoteData.color,
-      tags: newNoteData.tags.split(',').map(t => t.trim()).filter(t => t),
-      last_modified: new Date().toISOString()
-    };
-
-    const { data, error } = await supabase
-      .from('notes')
-      .insert([note])
-      .select();
-
-    if (error) {
-      alert("Error creating note. Check your Supabase Setup.");
-    } else {
-      if (data && data[0]) setActiveNoteId(data[0].id);
-      setShowNoteModal(false); // Close modal automatically
+    try {
+      const note = {
+        title: newNoteData.title || 'Untitled Note',
+        content: '',
+        color: newNoteData.color,
+        tags: newNoteData.tags.split(',').map(t => t.trim()).filter(t => t),
+        createdAt: serverTimestamp(),
+        lastModified: serverTimestamp(),
+      };
+      const docRef = await addDoc(collection(db, 'notes'), note);
+      setActiveNoteId(docRef.id);
+      setShowNoteModal(false); // Modal closes automatically
       setNewNoteData({ title: '', color: 'blue', tags: '' });
+    } catch (e) {
+      alert("Failed to create note. Please check your Firebase settings.");
     }
   };
 
   const updateNote = async (id, updates) => {
-    const { error } = await supabase
-      .from('notes')
-      .update({ ...updates, last_modified: new Date().toISOString() })
-      .eq('id', id);
-    
-    if (error) console.error("Update error:", error);
+    try {
+      const noteRef = doc(db, 'notes', id);
+      await updateDoc(noteRef, {
+        ...updates,
+        lastModified: serverTimestamp()
+      });
+    } catch (e) {
+      console.error("Update error:", e);
+    }
   };
 
   const deleteNote = async (id, e) => {
     e?.stopPropagation();
     if (confirm('Delete this note?')) {
-      const { error } = await supabase.from('notes').delete().eq('id', id);
-      if (error) alert("Delete failed.");
-      else if (activeNoteId === id) setActiveNoteId(null);
+      try {
+        await deleteDoc(doc(db, 'notes', id));
+        if (activeNoteId === id) setActiveNoteId(null);
+      } catch (e) {
+        alert("Delete failed.");
+      }
     }
   };
 
-  if (isError) {
+  if (!isConfigured) {
     return (
       <div className="empty-state" style={{ height: '100vh', background: 'var(--bg-color)', justifyContent: 'center' }}>
         <LogIn size={48} style={{ color: 'var(--danger)', marginBottom: 20 }} />
-        <h2 style={{ color: 'white' }}>Supabase Config Missing</h2>
+        <h2 style={{ color: 'white' }}>Firebase Connection Error</h2>
         <p style={{ maxWidth: '400px', textAlign: 'center', marginTop: 10 }}>
-          Please update <code>src/supabase.js</code> with your Supabase URL and Key.
+          Make sure <code>src/firebase.js</code> has your valid credentials.
         </p>
       </div>
     );
@@ -188,7 +183,9 @@ function App() {
                   onChange={(e) => updateNote(activeNote.id, { title: e.target.value })}
                 />
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <button className="btn-icon"><Trash2 size={20} onClick={(e) => deleteNote(activeNote.id, e)} /></button>
+                  <button className="btn-icon">
+                    <Trash2 size={20} onClick={(e) => deleteNote(activeNote.id, e)} />
+                  </button>
                 </div>
               </div>
               <div className="editor-toolbar">
@@ -247,7 +244,7 @@ function App() {
       {showNoteModal && (
         <div className="modal-overlay">
           <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="modal-content">
-            <h2 style={{ fontSize: '1.2rem' }}>Create Note</h2>
+            <h2 style={{ fontSize: '1.2rem' }}>New Note</h2>
             <div className="form-group">
               <label>Title</label>
               <input 
@@ -258,10 +255,10 @@ function App() {
               />
             </div>
             <div className="form-group">
-              <label>Tags (optional)</label>
+              <label>Tags</label>
               <input 
                 className="form-input" 
-                placeholder="e.g. work, ideas"
+                placeholder="work, idea, personal"
                 value={newNoteData.tags}
                 onChange={(e) => setNewNoteData({...newNoteData, tags: e.target.value})}
               />
@@ -281,7 +278,7 @@ function App() {
             </div>
             <div className="form-actions">
               <button onClick={() => setShowNoteModal(false)}>Cancel</button>
-              <button className="btn-primary" onClick={handleCreateNote}>Create</button>
+              <button className="btn-primary" onClick={handleCreateNote}>Create Note</button>
             </div>
           </motion.div>
         </div>
