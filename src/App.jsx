@@ -1,14 +1,16 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Plus, Search, Trash2, FileText, Share2, MoreHorizontal, 
-  Hash, Calendar, Palette, LogIn
+  Hash, Calendar, Palette, LogIn, Pin, PinOff, Image as ImageIcon, 
+  Sun, Moon, RotateCcw, XCircle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, 
   query, orderBy, serverTimestamp 
 } from 'firebase/firestore';
-import { db } from './firebase';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { db, storage } from './firebase';
 import './App.css';
 
 const COLORS = [
@@ -26,6 +28,16 @@ function App() {
   const [showNoteModal, setShowNoteModal] = useState(false);
   const [newNoteData, setNewNoteData] = useState({ title: '', color: 'blue', tags: '' });
   const [isConfigured, setIsConfigured] = useState(true);
+  const [view, setView] = useState('notes'); // 'notes' or 'trash'
+  const [theme, setTheme] = useState(() => localStorage.getItem('swift-theme') || 'dark');
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef(null);
+
+  // Apply Theme
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('swift-theme', theme);
+  }, [theme]);
 
   // Firestore Real-time Listener
   useEffect(() => {
@@ -40,7 +52,6 @@ function App() {
         setNotes(notesData);
         setIsConfigured(true);
       }, (error) => {
-        console.error("Firebase Error:", error);
         if (error.code === 'permission-denied' || error.message.includes('apiKey')) {
           setIsConfigured(false);
         }
@@ -54,14 +65,25 @@ function App() {
   const activeNote = useMemo(() => notes.find(n => n.id === activeNoteId), [notes, activeNoteId]);
 
   const filteredNotes = useMemo(() => {
-    if (!searchTerm) return notes;
-    const s = searchTerm.toLowerCase();
-    return notes.filter(n => 
-      n.title?.toLowerCase().includes(s) ||
-      n.content?.toLowerCase().includes(s) ||
-      n.tags?.some(t => t.toLowerCase().includes(s))
-    );
-  }, [notes, searchTerm]);
+    // Filter by view (notes or trash)
+    let result = notes.filter(n => view === 'trash' ? n.isDeleted : !n.isDeleted);
+    
+    // Sort: Pinned first
+    result = result.sort((a, b) => {
+      if (a.isPinned === b.isPinned) return b.lastModified - a.lastModified;
+      return a.isPinned ? -1 : 1;
+    });
+
+    if (searchTerm) {
+      const s = searchTerm.toLowerCase();
+      result = result.filter(n => 
+        n.title?.toLowerCase().includes(s) ||
+        n.content?.toLowerCase().includes(s) ||
+        n.tags?.some(t => t.toLowerCase().includes(s))
+      );
+    }
+    return result;
+  }, [notes, searchTerm, view]);
 
   const handleCreateNote = async () => {
     try {
@@ -70,15 +92,19 @@ function App() {
         content: '',
         color: newNoteData.color,
         tags: newNoteData.tags.split(',').map(t => t.trim()).filter(t => t),
+        isPinned: false,
+        isDeleted: false,
+        imageUrl: null,
         createdAt: serverTimestamp(),
         lastModified: serverTimestamp(),
       };
       const docRef = await addDoc(collection(db, 'notes'), note);
       setActiveNoteId(docRef.id);
-      setShowNoteModal(false); // Modal closes automatically
+      setShowNoteModal(false);
       setNewNoteData({ title: '', color: 'blue', tags: '' });
+      setView('notes');
     } catch (e) {
-      alert("Failed to create note. Please check your Firebase settings.");
+      alert("Error: " + e.message);
     }
   };
 
@@ -90,19 +116,43 @@ function App() {
         lastModified: serverTimestamp()
       });
     } catch (e) {
-      console.error("Update error:", e);
+      console.error(e);
     }
   };
 
-  const deleteNote = async (id, e) => {
+  const moveToTrash = async (id, e) => {
     e?.stopPropagation();
-    if (confirm('Delete this note?')) {
-      try {
-        await deleteDoc(doc(db, 'notes', id));
-        if (activeNoteId === id) setActiveNoteId(null);
-      } catch (e) {
-        alert("Delete failed.");
-      }
+    await updateNote(id, { isDeleted: true, isPinned: false });
+    if (activeNoteId === id) setActiveNoteId(null);
+  };
+
+  const restoreFromTrash = async (id, e) => {
+    e?.stopPropagation();
+    await updateNote(id, { isDeleted: false });
+  };
+
+  const deletePermanently = async (id, e) => {
+    e?.stopPropagation();
+    if (confirm('Permanently delete this note?')) {
+      await deleteDoc(doc(db, 'notes', id));
+      if (activeNoteId === id) setActiveNoteId(null);
+    }
+  };
+
+  const handleImageUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file || !activeNoteId) return;
+
+    try {
+      setIsUploading(true);
+      const storageRef = ref(storage, `images/${activeNoteId}_${Date.now()}`);
+      await uploadBytes(storageRef, file);
+      const url = await getDownloadURL(storageRef);
+      await updateNote(activeNoteId, { imageUrl: url });
+    } catch (error) {
+      alert("Upload failed: " + error.message);
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -110,10 +160,8 @@ function App() {
     return (
       <div className="empty-state" style={{ height: '100vh', background: 'var(--bg-color)', justifyContent: 'center' }}>
         <LogIn size={48} style={{ color: 'var(--danger)', marginBottom: 20 }} />
-        <h2 style={{ color: 'white' }}>Firebase Connection Error</h2>
-        <p style={{ maxWidth: '400px', textAlign: 'center', marginTop: 10 }}>
-          Make sure <code>src/firebase.js</code> has your valid credentials.
-        </p>
+        <h2 style={{ color: 'white' }}>Connection Setup Needed</h2>
+        <p style={{ color: 'var(--text-secondary)' }}>Check your Firebase settings in source code.</p>
       </div>
     );
   }
@@ -127,23 +175,30 @@ function App() {
             <img src="/logo.png" alt="Logo" style={{ width: '32px', height: '32px', borderRadius: '8px' }} />
             <h1>Swift Notes</h1>
           </div>
-          <button className="btn-primary" onClick={() => setShowNoteModal(true)}>
-            <Plus size={20} />
-            <span>New</span>
-          </button>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button className="btn-icon" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
+              {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
+            <button className="btn-primary" onClick={() => setShowNoteModal(true)}>
+              <Plus size={20} />
+            </button>
+          </div>
         </div>
 
         <div className="sidebar-content scroll-hide">
           <div className="sidebar-section">
+            <div className={`nav-item ${view === 'notes' ? 'active' : ''}`} onClick={() => setView('notes')}>
+              <FileText size={18} /> <span>All Notes</span>
+            </div>
+            <div className={`nav-item ${view === 'trash' ? 'active' : ''}`} onClick={() => setView('trash')}>
+              <Trash2 size={18} /> <span>Trash Bin</span>
+            </div>
+          </div>
+
+          <div className="sidebar-section">
             <div style={{ position: 'relative', margin: '8px' }}>
               <Search size={16} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-secondary)' }} />
-              <input 
-                className="search-box" 
-                placeholder="Search..." 
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                style={{ paddingLeft: '32px' }}
-              />
+              <input className="search-box" placeholder="Search..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} style={{ paddingLeft: '32px' }} />
             </div>
           </div>
 
@@ -152,16 +207,27 @@ function App() {
               <AnimatePresence>
                 {filteredNotes.map(note => (
                   <motion.div
-                    key={note.id}
-                    layout
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
+                    key={note.id} layout
                     className={`note-item ${activeNoteId === note.id ? 'active' : ''} note-${note.color}`}
                     onClick={() => setActiveNoteId(note.id)}
                   >
-                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                      <h3 style={{ fontSize: '0.9rem' }}>{note.title}</h3>
-                      <button onClick={(e) => deleteNote(note.id, e)}><Trash2 size={12} /></button>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <h3 style={{ fontSize: '0.9rem', display: 'flex', alignItems: 'center' }}>
+                        {note.isPinned && <Pin size={12} className="pinned-indicator" fill="currentColor" />}
+                        {note.title}
+                      </h3>
+                      {view === 'trash' ? (
+                        <div style={{ display: 'flex', gap: 4 }}>
+                          <button onClick={(e) => restoreFromTrash(note.id, e)}><RotateCcw size={12} /></button>
+                          <button onClick={(e) => deletePermanently(note.id, e)}><Trash2 size={12} /></button>
+                        </div>
+                      ) : (
+                        <button onClick={(e) => moveToTrash(note.id, e)}><Trash2 size={12} /></button>
+                      )}
+                    </div>
+                    {note.imageUrl && <img src={note.imageUrl} className="note-item-image-preview" alt="Preview" />}
+                    <div style={{ marginTop: 4 }}>
+                      {note.tags?.slice(0, 2).map(tag => <span key={tag} className="tag-badge">#{tag}</span>)}
                     </div>
                   </motion.div>
                 ))}
@@ -177,65 +243,65 @@ function App() {
           <>
             <div className="editor-header">
               <div className="editor-header-top">
-                <input 
-                  className="editor-title-input" 
-                  value={activeNote.title}
-                  onChange={(e) => updateNote(activeNote.id, { title: e.target.value })}
-                />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1 }}>
+                  {!activeNote.isDeleted && (
+                    <button className="btn-icon" onClick={() => updateNote(activeNote.id, { isPinned: !activeNote.isPinned })}>
+                      {activeNote.isPinned ? <PinOff size={20} /> : <Pin size={20} />}
+                    </button>
+                  )}
+                  <input className="editor-title-input" value={activeNote.title} onChange={(e) => updateNote(activeNote.id, { title: e.target.value })} />
+                </div>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <button className="btn-icon">
-                    <Trash2 size={20} onClick={(e) => deleteNote(activeNote.id, e)} />
+                  {!activeNote.isDeleted && (
+                    <button className="btn-icon" onClick={() => fileInputRef.current.click()} disabled={isUploading}>
+                      <ImageIcon size={20} style={{ color: isUploading ? 'var(--text-secondary)' : 'inherit' }} />
+                    </button>
+                  )}
+                  <input type="file" ref={fileInputRef} onChange={handleImageUpload} style={{ display: 'none' }} accept="image/*" />
+                  <button className="btn-icon" onClick={(e) => activeNote.isDeleted ? deletePermanently(activeNote.id, e) : moveToTrash(activeNote.id, e)}>
+                    <Trash2 size={20} />
                   </button>
                 </div>
               </div>
               <div className="editor-toolbar">
                 <div className="color-picker">
                   {COLORS.map(c => (
-                    <div 
-                      key={c.name}
-                      className={`color-dot note-${c.name} ${activeNote.color === c.name ? 'active' : ''}`}
-                      style={{ background: c.value }}
-                      onClick={() => updateNote(activeNote.id, { color: c.name })}
-                    />
+                    <div key={c.name} className={`color-dot note-${c.name} ${activeNote.color === c.name ? 'active' : ''}`} style={{ background: c.value }} onClick={() => updateNote(activeNote.id, { color: c.name })} />
                   ))}
                 </div>
                 <div style={{ width: 1, height: 20, background: 'var(--border-color)' }} />
                 <div className="tag-input-container">
                   <Hash size={14} />
-                  <input 
-                    className="tag-input" 
-                    placeholder="Tag..." 
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && e.target.value) {
-                        const newTag = e.target.value.trim();
-                        if (!activeNote.tags?.includes(newTag)) {
-                          updateNote(activeNote.id, { tags: [...(activeNote.tags || []), newTag] });
-                        }
-                        e.target.value = '';
-                      }
-                    }}
-                  />
+                  <input className="tag-input" placeholder="Tag..." onKeyDown={(e) => {
+                    if (e.key === 'Enter' && e.target.value) {
+                      const newTag = e.target.value.trim();
+                      if (!activeNote.tags?.includes(newTag)) updateNote(activeNote.id, { tags: [...(activeNote.tags || []), newTag] });
+                      e.target.value = '';
+                    }
+                  }} />
                 </div>
+                {activeNote.isDeleted && <span className="tag-badge" style={{ background: 'var(--danger)', color: 'white' }}>IN TRASH</span>}
               </div>
             </div>
             <div className="editor-content scroll-hide">
-              <textarea 
-                className="note-textarea"
-                placeholder="Start writing..."
-                value={activeNote.content || ''}
-                onChange={(e) => updateNote(activeNote.id, { content: e.target.value })}
-              />
+              {activeNote.imageUrl && (
+                <div style={{ position: 'relative' }}>
+                  <img src={activeNote.imageUrl} className="note-image" alt="Attachment" />
+                  <button className="btn-icon" style={{ position: 'absolute', top: 20, right: 20, background: 'rgba(0,0,0,0.5)', color: 'white' }} onClick={() => updateNote(activeNote.id, { imageUrl: null })}>
+                    <XCircle size={20} />
+                  </button>
+                </div>
+              )}
+              <textarea className="note-textarea" placeholder="Start writing..." value={activeNote.content || ''} onChange={(e) => updateNote(activeNote.id, { content: e.target.value })} />
             </div>
           </>
         ) : (
-          <div className="empty-state" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
+          <div className="empty-state">
             <motion.div initial={{ scale: 0.8 }} animate={{ scale: 1 }} transition={{ repeat: Infinity, repeatType: 'reverse', duration: 2 }}>
               <FileText size={80} style={{ color: 'var(--border-color)', marginBottom: 24 }} />
             </motion.div>
-            <h2 style={{ fontSize: '1.5rem', fontWeight: '600', marginBottom: 8 }}>Pick a note to edit</h2>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '1rem' }}>
-              Your notes are synced in real-time across all devices.
-            </p>
+            <h2 style={{ fontSize: '1.5rem', fontWeight: '600' }}>Pick a note to edit</h2>
+            <p style={{ color: 'var(--text-secondary)' }}>Your notes are synced in real-time across all devices.</p>
           </div>
         )}
       </main>
@@ -244,35 +310,20 @@ function App() {
       {showNoteModal && (
         <div className="modal-overlay">
           <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="modal-content">
-            <h2 style={{ fontSize: '1.2rem' }}>New Note</h2>
+            <h2>New Note</h2>
             <div className="form-group">
               <label>Title</label>
-              <input 
-                className="form-input" 
-                value={newNoteData.title}
-                onChange={(e) => setNewNoteData({...newNoteData, title: e.target.value})}
-                autoFocus
-              />
+              <input className="form-input" value={newNoteData.title} onChange={(e) => setNewNoteData({...newNoteData, title: e.target.value})} autoFocus />
             </div>
             <div className="form-group">
               <label>Tags</label>
-              <input 
-                className="form-input" 
-                placeholder="work, idea, personal"
-                value={newNoteData.tags}
-                onChange={(e) => setNewNoteData({...newNoteData, tags: e.target.value})}
-              />
+              <input className="form-input" placeholder="work, idea" value={newNoteData.tags} onChange={(e) => setNewNoteData({...newNoteData, tags: e.target.value})} />
             </div>
             <div className="form-group">
               <label>Color</label>
               <div className="color-picker" style={{ marginTop: 8 }}>
                 {COLORS.map(c => (
-                  <div 
-                    key={c.name}
-                    className={`color-dot note-${c.name} ${newNoteData.color === c.name ? 'active' : ''}`}
-                    style={{ background: c.value, width: 24, height: 24 }}
-                    onClick={() => setNewNoteData({...newNoteData, color: c.name})}
-                  />
+                  <div key={c.name} className={`color-dot note-${c.name} ${newNoteData.color === c.name ? 'active' : ''}`} style={{ background: c.value, width: 24, height: 24 }} onClick={() => setNewNoteData({...newNoteData, color: c.name})} />
                 ))}
               </div>
             </div>
