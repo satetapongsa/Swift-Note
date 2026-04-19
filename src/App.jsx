@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Plus, Search, Trash2, FileText, Share2, MoreHorizontal, 
   Hash, Calendar, Palette, LogIn, Pin, PinOff, 
-  Sun, Moon, RotateCcw, XCircle
+  Sun, Moon, RotateCcw, XCircle, Sparkles, Copy, Type, Link as LinkIcon, Check
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -12,6 +12,9 @@ import {
 import { db } from './firebase';
 import './App.css';
 
+// Replace with your Google Gemini API Key
+const GEMINI_API_KEY = "YOUR_GEMINI_API_KEY";
+
 const COLORS = [
   { name: 'blue', value: '#3b82f6' },
   { name: 'purple', value: '#a855f7' },
@@ -20,25 +23,30 @@ const COLORS = [
   { name: 'red', value: '#ef4444' }
 ];
 
+const FONT_SIZES = ['s', 'm', 'l', 'xl'];
+
 function App() {
   const [notes, setNotes] = useState([]);
   const [activeNoteId, setActiveNoteId] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [showNoteModal, setShowNoteModal] = useState(false);
-  const [showDeleteModal, setShowDeleteModal] = useState(false);
-  const [noteToDelete, setNoteToDelete] = useState(null);
   const [newNoteData, setNewNoteData] = useState({ title: '', color: 'blue', tags: '' });
   const [isConfigured, setIsConfigured] = useState(true);
-  const [view, setView] = useState('notes'); // 'notes' or 'trash'
+  const [view, setView] = useState('notes'); 
   const [theme, setTheme] = useState(() => localStorage.getItem('swift-theme') || 'dark');
+  const [fontSize, setFontSize] = useState(() => localStorage.getItem('swift-fsize') || 'm');
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const [copyStatus, setCopyStatus] = useState(false);
 
-  // Apply Theme
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('swift-theme', theme);
   }, [theme]);
 
-  // Firestore Real-time Listener
+  useEffect(() => {
+    localStorage.setItem('swift-fsize', fontSize);
+  }, [fontSize]);
+
   useEffect(() => {
     try {
       const q = query(collection(db, 'notes'), orderBy('lastModified', 'desc'));
@@ -65,7 +73,6 @@ function App() {
 
   const filteredNotes = useMemo(() => {
     let result = notes.filter(n => view === 'trash' ? n.isDeleted : !n.isDeleted);
-    
     result = result.sort((a, b) => {
       if (a.isPinned === b.isPinned) return b.lastModified - a.lastModified;
       return a.isPinned ? -1 : 1;
@@ -82,6 +89,15 @@ function App() {
     return result;
   }, [notes, searchTerm, view]);
 
+  const stats = useMemo(() => {
+    if (!activeNote || !activeNote.content) return { words: 0, chars: 0 };
+    const text = activeNote.content.trim();
+    return {
+      words: text ? text.split(/\s+/).length : 0,
+      chars: text.length
+    };
+  }, [activeNote]);
+
   const handleCreateNote = async () => {
     try {
       const note = {
@@ -91,6 +107,7 @@ function App() {
         tags: newNoteData.tags.split(',').map(t => t.trim()).filter(t => t),
         isPinned: false,
         isDeleted: false,
+        summary: null,
         createdAt: serverTimestamp(),
         lastModified: serverTimestamp(),
       };
@@ -118,29 +135,84 @@ function App() {
 
   const confirmDelete = (id, e, isPermanent = false) => {
     e?.stopPropagation();
-    setNoteToDelete({ id, isPermanent });
-    setShowDeleteModal(true);
+    if (confirm(isPermanent ? 'Delete permanently?' : 'Move to trash?')) {
+      if (isPermanent) deletePermanently(id);
+      else moveToTrash(id);
+    }
   };
 
-  const executeDelete = async () => {
-    if (!noteToDelete) return;
-    const { id, isPermanent } = noteToDelete;
-    
-    if (isPermanent) {
-      await deleteDoc(doc(db, 'notes', id));
-      if (activeNoteId === id) setActiveNoteId(null);
-    } else {
-      await updateNote(id, { isDeleted: true, isPinned: false });
-      if (activeNoteId === id) setActiveNoteId(null);
-    }
-    
-    setShowDeleteModal(false);
-    setNoteToDelete(null);
+  const moveToTrash = async (id) => {
+    await updateNote(id, { isDeleted: true, isPinned: false });
+    if (activeNoteId === id) setActiveNoteId(null);
   };
 
   const restoreFromTrash = async (id, e) => {
     e?.stopPropagation();
     await updateNote(id, { isDeleted: false });
+  };
+
+  const deletePermanently = async (id) => {
+    await deleteDoc(doc(db, 'notes', id));
+    if (activeNoteId === id) setActiveNoteId(null);
+  };
+
+  const copyToClipboard = () => {
+    if (!activeNote) return;
+    navigator.clipboard.writeText(activeNote.content);
+    setCopyStatus(true);
+    setTimeout(() => setCopyStatus(false), 2000);
+  };
+
+  const handleAISummary = async () => {
+    if (!activeNote || !activeNote.content) return;
+    
+    setIsSummarizing(true);
+    try {
+      if (GEMINI_API_KEY === "YOUR_GEMINI_API_KEY") {
+        // Simulated AI for demo
+        await new Promise(r => setTimeout(r, 2000));
+        const mockSummary = "สรุปโดยสังเขป: โน้ตนี้กล่าวถึง " + activeNote.title + " ซึ่งประกอบไปด้วยรายละเอียดหลักเรื่อง " + activeNote.content.substring(0, 50) + "... และอื่นๆ (กรุณาใส่ Gemini API Key เพื่อรับการสรุปฉบับจริง)";
+        updateNote(activeNote.id, { summary: mockSummary });
+      } else {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: `สรุปเนื้อหาในโน้ตตัวนี้ให้สั้น กระชับ และดูเป็นมืออาชีพในภาษาไทย: ${activeNote.content}` }] }]
+          })
+        });
+        const data = await response.json();
+        const fullSummary = data.candidates[0].content.parts[0].text;
+        updateNote(activeNote.id, { summary: fullSummary });
+      }
+    } catch (error) {
+      alert("AI Error: " + error.message);
+    } finally {
+      setIsSummarizing(false);
+    }
+  };
+
+  const highlightSearch = (text) => {
+    if (!searchTerm || !text) return text;
+    const parts = text.split(new RegExp(`(${searchTerm})`, 'gi'));
+    return parts.map((part, i) => 
+      part.toLowerCase() === searchTerm.toLowerCase() 
+        ? <span key={i} className="search-highlight">{part}</span> 
+        : part
+    );
+  };
+
+  const renderContent = (content) => {
+    if (!content) return '';
+    // Simple Auto-linker
+    const urlPattern = /(https?:\/\/[^\s]+)/g;
+    const parts = content.split(urlPattern);
+    return parts.map((part, i) => {
+      if (part.match(urlPattern)) {
+        return <a key={i} href={part} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-color)', textDecoration: 'underline' }}>{part}</a>;
+      }
+      return part;
+    });
   };
 
   if (!isConfigured) {
@@ -201,7 +273,7 @@ function App() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <h3 style={{ fontSize: '0.9rem', display: 'flex', alignItems: 'center' }}>
                         {note.isPinned && <Pin size={12} className="pinned-indicator" fill="currentColor" />}
-                        {note.title}
+                        {highlightSearch(note.title)}
                       </h3>
                       {view === 'trash' ? (
                         <div style={{ display: 'flex', gap: 4 }}>
@@ -212,7 +284,10 @@ function App() {
                         <button onClick={(e) => confirmDelete(note.id, e)}><Trash2 size={12} /></button>
                       )}
                     </div>
-                    <div style={{ marginTop: 4 }}>
+                    <p style={{ fontSize: '0.75rem', marginTop: 4 }}>
+                      {highlightSearch(note.content?.substring(0, 40))}...
+                    </p>
+                    <div style={{ marginTop: 8 }}>
                       {note.tags?.slice(0, 2).map(tag => <span key={tag} className="tag-badge">#{tag}</span>)}
                     </div>
                   </motion.div>
@@ -232,14 +307,23 @@ function App() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1 }}>
                   {!activeNote.isDeleted && (
                     <button className="btn-icon" onClick={() => updateNote(activeNote.id, { isPinned: !activeNote.isPinned })}>
-                      {activeNote.isPinned ? <PinOff size={20} /> : <Pin size={20} />}
+                      {activeNote.isPinned ? <PinOff size={18} /> : <Pin size={18} />}
                     </button>
                   )}
                   <input className="editor-title-input" value={activeNote.title} onChange={(e) => updateNote(activeNote.id, { title: e.target.value })} />
                 </div>
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button className={`btn-icon ${isSummarizing ? 'animate-pulse' : ''}`} onClick={handleAISummary} title="AI Summary">
+                    <Sparkles size={18} color={isSummarizing ? 'var(--accent-color)' : 'inherit'} />
+                  </button>
+                  <button className="btn-icon" onClick={copyToClipboard} title="Copy to Clipboard">
+                    {copyStatus ? <Check size={18} color="var(--success)" /> : <Copy size={18} />}
+                  </button>
+                  <button className="btn-icon" onClick={() => setFontSize(FONT_SIZES[(FONT_SIZES.indexOf(fontSize) + 1) % FONT_SIZES.length])}>
+                    <Type size={18} />
+                  </button>
                   <button className="btn-icon" onClick={(e) => confirmDelete(activeNote.id, e, activeNote.isDeleted)}>
-                    <Trash2 size={20} />
+                    <Trash2 size={18} />
                   </button>
                 </div>
               </div>
@@ -260,11 +344,28 @@ function App() {
                     }
                   }} />
                 </div>
-                {activeNote.isDeleted && <span className="tag-badge" style={{ background: 'var(--danger)', color: 'white' }}>IN TRASH</span>}
               </div>
             </div>
             <div className="editor-content scroll-hide">
-              <textarea className="note-textarea" placeholder="Start writing..." value={activeNote.content || ''} onChange={(e) => updateNote(activeNote.id, { content: e.target.value })} />
+              <AnimatePresence>
+                {activeNote.summary && (
+                  <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="ai-summary-box">
+                    <p style={{ fontSize: '0.9rem', lineHeight: 1.6 }}>{activeNote.summary}</p>
+                    <button style={{ position: 'absolute', bottom: 8, right: 12, fontSize: '0.7rem', color: 'var(--accent-color)' }} onClick={() => updateNote(activeNote.id, { summary: null })}>Clear</button>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+              <textarea 
+                className={`note-textarea font-size-${fontSize}`} 
+                placeholder="Start writing..." 
+                value={activeNote.content || ''} 
+                onChange={(e) => updateNote(activeNote.id, { content: e.target.value })} 
+              />
+            </div>
+            <div className="word-count-bar">
+              <span><b>{stats.words}</b> words</span>
+              <span><b>{stats.chars}</b> characters</span>
+              <span style={{ marginLeft: 'auto', opacity: 0.5 }}>Last edited: {new Date(activeNote.lastModified).toLocaleString()}</span>
             </div>
           </>
         ) : (
@@ -289,47 +390,9 @@ function App() {
               <label>Title</label>
               <input className="form-input" value={newNoteData.title} onChange={(e) => setNewNoteData({...newNoteData, title: e.target.value})} autoFocus />
             </div>
-            <div className="form-group">
-              <label>Tags</label>
-              <input className="form-input" placeholder="work, idea" value={newNoteData.tags} onChange={(e) => setNewNoteData({...newNoteData, tags: e.target.value})} />
-            </div>
-            <div className="form-group">
-              <label>Color</label>
-              <div className="color-picker" style={{ marginTop: 8 }}>
-                {COLORS.map(c => (
-                  <div key={c.name} className={`color-dot note-${c.name} ${newNoteData.color === c.name ? 'active' : ''}`} style={{ background: c.value, width: 24, height: 24 }} onClick={() => setNewNoteData({...newNoteData, color: c.name})} />
-                ))}
-              </div>
-            </div>
             <div className="form-actions">
               <button onClick={() => setShowNoteModal(false)}>Cancel</button>
               <button className="btn-primary" onClick={handleCreateNote}>Create Note</button>
-            </div>
-          </motion.div>
-        </div>
-      )}
-
-      {/* Delete Confirmation Modal */}
-      {showDeleteModal && (
-        <div className="modal-overlay">
-          <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="modal-content" style={{ maxWidth: '360px' }}>
-            <h2 style={{ color: 'var(--danger)', fontSize: '1.25rem' }}>
-              {noteToDelete?.isPermanent ? 'Delete Permanently?' : 'Move to Trash?'}
-            </h2>
-            <p style={{ color: 'var(--text-secondary)', marginBottom: 24 }}>
-              {noteToDelete?.isPermanent 
-                ? 'This action cannot be undone. This note will be gone forever.' 
-                : 'You can still find this note in the Trash Bin later.'}
-            </p>
-            <div className="form-actions">
-              <button onClick={() => setShowDeleteModal(false)}>Cancel</button>
-              <button 
-                className="btn-primary" 
-                style={{ background: 'var(--danger)', boxShadow: 'none' }}
-                onClick={executeDelete}
-              >
-                Confirm Delete
-              </button>
             </div>
           </motion.div>
         </div>
