@@ -4,7 +4,7 @@
   --bg-color: #030711;
   --surface-color: #0f172a;
   --surface-hover: #1e293b;
-  --accent-color: #3b82f6;
+  --accent-color: var(--dynamic-accent, #3b82f6);
   --accent-glow: rgba(59, 130, 246, 0.4);
   --text-primary: #f8fafc;
   --text-secondary: #94a3b8;
@@ -20,7 +20,7 @@
   --bg-color: #f8fafc;
   --surface-color: #ffffff;
   --surface-hover: #f1f5f9;
-  --accent-color: #2563eb;
+  --accent-color: var(--dynamic-accent, #2563eb);
   --accent-glow: rgba(37, 99, 235, 0.1);
   --text-primary: #0f172a;
   --text-secondary: #64748b;
