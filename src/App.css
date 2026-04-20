@@ -268,44 +268,67 @@ input, textarea {
   padding: 0 2px;
 }
 
-.ai-summary-box {
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.1) 0%, rgba(168, 85, 247, 0.1) 100%);
-  border: 1px solid rgba(59, 130, 246, 0.2);
-  padding: 20px;
-  border-radius: 16px;
-  margin-bottom: 24px;
-  position: relative;
-  overflow: hidden;
-}
-
-.ai-summary-box::before {
-  content: 'AI Summary';
-  position: absolute;
-  top: 0;
-  right: 0;
-  background: var(--accent-color);
-  color: white;
-  font-size: 0.65rem;
-  font-weight: 700;
-  padding: 2px 10px;
-  border-bottom-left-radius: 12px;
-  text-transform: uppercase;
-}
-
 .word-count-bar {
   padding: 12px 32px;
   border-top: 1px solid var(--border-color);
   font-size: 0.75rem;
   color: var(--text-secondary);
   display: flex;
+  align-items: center;
   gap: 16px;
   background: var(--bg-color);
 }
 
-.font-size-s { font-size: 0.9rem; }
-.font-size-m { font-size: 1.1rem; }
-.font-size-l { font-size: 1.3rem; }
-.font-size-xl { font-size: 1.6rem; }
+.cloud-icon {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--success);
+  transition: all 0.3s;
+}
+
+.cloud-icon.syncing {
+  color: var(--accent-color);
+  animation: pulse 1.5s infinite;
+}
+
+@keyframes pulse {
+  0% { opacity: 0.4; }
+  50% { opacity: 1; }
+  100% { opacity: 0.4; }
+}
+
+.locked-overlay {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-color);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  gap: 20px;
+}
+
+.reminder-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.7rem;
+  color: var(--accent-color);
+  background: var(--accent-glow);
+  padding: 2px 8px;
+  border-radius: 4px;
+  margin-top: 4px;
+}
+
+.font-size-xs { font-size: 0.75rem !important; }
+.font-size-s { font-size: 0.9rem !important; }
+.font-size-m { font-size: 1.1rem !important; }
+.font-size-l { font-size: 1.4rem !important; }
+.font-size-xl { font-size: 1.8rem !important; }
+.font-size-xxl { font-size: 2.2rem !important; }
 
 /* Editor */
 .editor {

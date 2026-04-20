@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Plus, Search, Trash2, FileText, Share2, MoreHorizontal, 
   Hash, Calendar, Palette, LogIn, Pin, PinOff, 
-  Sun, Moon, RotateCcw, XCircle, Sparkles, Copy, Type, Link as LinkIcon, Check
+  Sun, Moon, RotateCcw, XCircle, Copy, Type, Link as LinkIcon, Check,
+  Download, Bell, Lock, Unlock, Cloud, CloudOff, Eye, EyeOff
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -12,9 +13,6 @@ import {
 import { db } from './firebase';
 import './App.css';
 
-// Replace with your Google Gemini API Key
-const GEMINI_API_KEY = "YOUR_GEMINI_API_KEY";
-
 const COLORS = [
   { name: 'blue', value: '#3b82f6' },
   { name: 'purple', value: '#a855f7' },
@@ -23,20 +21,31 @@ const COLORS = [
   { name: 'red', value: '#ef4444' }
 ];
 
-const FONT_SIZES = ['s', 'm', 'l', 'xl'];
+const FONT_SIZES = [
+  { id: 'xs', label: 'Tiny' },
+  { id: 's', label: 'Small' },
+  { id: 'm', label: 'Medium' },
+  { id: 'l', label: 'Large' },
+  { id: 'xl', label: 'X-Large' },
+  { id: 'xxl', label: 'Huge' }
+];
 
 function App() {
   const [notes, setNotes] = useState([]);
   const [activeNoteId, setActiveNoteId] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [showNoteModal, setShowNoteModal] = useState(false);
+  const [showLockModal, setShowLockModal] = useState(false);
+  const [showReminderModal, setShowReminderModal] = useState(false);
   const [newNoteData, setNewNoteData] = useState({ title: '', color: 'blue', tags: '' });
   const [isConfigured, setIsConfigured] = useState(true);
   const [view, setView] = useState('notes'); 
   const [theme, setTheme] = useState(() => localStorage.getItem('swift-theme') || 'dark');
   const [fontSize, setFontSize] = useState(() => localStorage.getItem('swift-fsize') || 'm');
-  const [isSummarizing, setIsSummarizing] = useState(false);
   const [copyStatus, setCopyStatus] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [unlockedNotes, setUnlockedNotes] = useState({}); // { id: true }
+  const [passInput, setPassInput] = useState('');
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -48,7 +57,14 @@ function App() {
   }, [fontSize]);
 
   useEffect(() => {
+    if ("Notification" in window) {
+      Notification.requestPermission();
+    }
+  }, []);
+
+  useEffect(() => {
     try {
+      setIsSyncing(true);
       const q = query(collection(db, 'notes'), orderBy('lastModified', 'desc'));
       const unsubscribe = onSnapshot(q, (snapshot) => {
         const notesData = snapshot.docs.map(doc => ({
@@ -58,16 +74,37 @@ function App() {
         }));
         setNotes(notesData);
         setIsConfigured(true);
+        setIsSyncing(false);
       }, (error) => {
         if (error.code === 'permission-denied' || error.message.includes('apiKey')) {
           setIsConfigured(false);
         }
+        setIsSyncing(false);
       });
       return () => unsubscribe();
     } catch (e) {
       setIsConfigured(false);
+      setIsSyncing(false);
     }
   }, []);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      notes.forEach(note => {
+        if (note.reminderDate && !note.isDeleted && !note.reminderFired) {
+          if (note.reminderDate <= now) {
+            new Notification(`Swift Notes: ${note.title}`, {
+              body: "Time for your scheduled note!",
+              icon: "/logo.png"
+            });
+            updateNote(note.id, { reminderFired: true });
+          }
+        }
+      });
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [notes]);
 
   const activeNote = useMemo(() => notes.find(n => n.id === activeNoteId), [notes, activeNoteId]);
 
@@ -100,6 +137,7 @@ function App() {
 
   const handleCreateNote = async () => {
     try {
+      setIsSyncing(true);
       const note = {
         title: newNoteData.title || 'Untitled Note',
         content: '',
@@ -107,7 +145,9 @@ function App() {
         tags: newNoteData.tags.split(',').map(t => t.trim()).filter(t => t),
         isPinned: false,
         isDeleted: false,
-        summary: null,
+        password: null,
+        reminderDate: null,
+        reminderFired: false,
         createdAt: serverTimestamp(),
         lastModified: serverTimestamp(),
       };
@@ -118,11 +158,14 @@ function App() {
       setView('notes');
     } catch (e) {
       alert("Error: " + e.message);
+    } finally {
+      setIsSyncing(false);
     }
   };
 
   const updateNote = async (id, updates) => {
     try {
+      setIsSyncing(true);
       const noteRef = doc(db, 'notes', id);
       await updateDoc(noteRef, {
         ...updates,
@@ -130,6 +173,8 @@ function App() {
       });
     } catch (e) {
       console.error(e);
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -146,11 +191,6 @@ function App() {
     if (activeNoteId === id) setActiveNoteId(null);
   };
 
-  const restoreFromTrash = async (id, e) => {
-    e?.stopPropagation();
-    await updateNote(id, { isDeleted: false });
-  };
-
   const deletePermanently = async (id) => {
     await deleteDoc(doc(db, 'notes', id));
     if (activeNoteId === id) setActiveNoteId(null);
@@ -163,67 +203,18 @@ function App() {
     setTimeout(() => setCopyStatus(false), 2000);
   };
 
-  const handleAISummary = async () => {
-    if (!activeNote || !activeNote.content) return;
-    
-    setIsSummarizing(true);
-    try {
-      if (GEMINI_API_KEY === "YOUR_GEMINI_API_KEY") {
-        // Simulated AI for demo
-        await new Promise(r => setTimeout(r, 2000));
-        const mockSummary = "สรุปโดยสังเขป: โน้ตนี้กล่าวถึง " + activeNote.title + " ซึ่งประกอบไปด้วยรายละเอียดหลักเรื่อง " + activeNote.content.substring(0, 50) + "... และอื่นๆ (กรุณาใส่ Gemini API Key เพื่อรับการสรุปฉบับจริง)";
-        updateNote(activeNote.id, { summary: mockSummary });
-      } else {
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: `สรุปเนื้อหาในโน้ตตัวนี้ให้สั้น กระชับ และดูเป็นมืออาชีพในภาษาไทย: ${activeNote.content}` }] }]
-          })
-        });
-        const data = await response.json();
-        const fullSummary = data.candidates[0].content.parts[0].text;
-        updateNote(activeNote.id, { summary: fullSummary });
-      }
-    } catch (error) {
-      alert("AI Error: " + error.message);
-    } finally {
-      setIsSummarizing(false);
-    }
+  const handleExport = () => {
+    if (!activeNote) return;
+    const blob = new Blob([`# ${activeNote.title}\n\n${activeNote.content}`], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${activeNote.title}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
-  const highlightSearch = (text) => {
-    if (!searchTerm || !text) return text;
-    const parts = text.split(new RegExp(`(${searchTerm})`, 'gi'));
-    return parts.map((part, i) => 
-      part.toLowerCase() === searchTerm.toLowerCase() 
-        ? <span key={i} className="search-highlight">{part}</span> 
-        : part
-    );
-  };
-
-  const renderContent = (content) => {
-    if (!content) return '';
-    // Simple Auto-linker
-    const urlPattern = /(https?:\/\/[^\s]+)/g;
-    const parts = content.split(urlPattern);
-    return parts.map((part, i) => {
-      if (part.match(urlPattern)) {
-        return <a key={i} href={part} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-color)', textDecoration: 'underline' }}>{part}</a>;
-      }
-      return part;
-    });
-  };
-
-  if (!isConfigured) {
-    return (
-      <div className="empty-state" style={{ height: '100vh', background: 'var(--bg-color)', justifyContent: 'center' }}>
-        <LogIn size={48} style={{ color: 'var(--danger)', marginBottom: 20 }} />
-        <h2 style={{ color: 'white' }}>Connection Setup Needed</h2>
-        <p style={{ color: 'var(--text-secondary)' }}>Check your Firebase settings.</p>
-      </div>
-    );
-  }
+  const isLocked = activeNote?.password && !unlockedNotes[activeNote.id];
 
   return (
     <div className="app-container">
@@ -271,22 +262,18 @@ function App() {
                     onClick={() => setActiveNoteId(note.id)}
                   >
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <h3 style={{ fontSize: '0.9rem', display: 'flex', alignItems: 'center' }}>
+                      <h3 style={{ fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: 4 }}>
+                        {note.password && <Lock size={12} style={{ opacity: 0.5 }} />}
                         {note.isPinned && <Pin size={12} className="pinned-indicator" fill="currentColor" />}
-                        {highlightSearch(note.title)}
+                        {note.title}
                       </h3>
-                      {view === 'trash' ? (
-                        <div style={{ display: 'flex', gap: 4 }}>
-                          <button onClick={(e) => restoreFromTrash(note.id, e)}><RotateCcw size={12} /></button>
-                          <button onClick={(e) => confirmDelete(note.id, e, true)}><Trash2 size={12} /></button>
-                        </div>
-                      ) : (
-                        <button onClick={(e) => confirmDelete(note.id, e)}><Trash2 size={12} /></button>
-                      )}
+                      <button onClick={(e) => confirmDelete(note.id, e, view === 'trash')}><Trash2 size={12} /></button>
                     </div>
-                    <p style={{ fontSize: '0.75rem', marginTop: 4 }}>
-                      {highlightSearch(note.content?.substring(0, 40))}...
-                    </p>
+                    {note.reminderDate && !note.reminderFired && (
+                      <div className="reminder-badge">
+                        <Bell size={10} /> {new Date(note.reminderDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </div>
+                    )}
                     <div style={{ marginTop: 8 }}>
                       {note.tags?.slice(0, 2).map(tag => <span key={tag} className="tag-badge">#{tag}</span>)}
                     </div>
@@ -299,32 +286,74 @@ function App() {
       </aside>
 
       {/* Editor */}
-      <main className="editor">
+      <main className="editor" style={{ position: 'relative' }}>
         {activeNote ? (
           <>
+            {isLocked && (
+              <div className="locked-overlay">
+                <Lock size={64} style={{ color: 'var(--accent-color)', opacity: 0.2 }} />
+                <h3>This note is locked</h3>
+                <div className="form-group" style={{ width: '240px' }}>
+                  <input 
+                    type="password" 
+                    className="form-input" 
+                    placeholder="Enter password" 
+                    value={passInput}
+                    onChange={(e) => setPassInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && passInput === activeNote.password) {
+                        setUnlockedNotes({...unlockedNotes, [activeNote.id]: true});
+                        setPassInput('');
+                      }
+                    }}
+                  />
+                </div>
+                <button 
+                  className="btn-primary" 
+                  onClick={() => {
+                    if (passInput === activeNote.password) {
+                      setUnlockedNotes({...unlockedNotes, [activeNote.id]: true});
+                      setPassInput('');
+                    } else {
+                      alert("Wrong password!");
+                    }
+                  }}
+                >
+                  Unlock Note
+                </button>
+              </div>
+            )}
+
             <div className="editor-header">
               <div className="editor-header-top">
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1 }}>
-                  {!activeNote.isDeleted && (
-                    <button className="btn-icon" onClick={() => updateNote(activeNote.id, { isPinned: !activeNote.isPinned })}>
-                      {activeNote.isPinned ? <PinOff size={18} /> : <Pin size={18} />}
-                    </button>
-                  )}
+                  <button className="btn-icon" onClick={() => updateNote(activeNote.id, { isPinned: !activeNote.isPinned })}>
+                    {activeNote.isPinned ? <PinOff size={18} /> : <Pin size={18} />}
+                  </button>
                   <input className="editor-title-input" value={activeNote.title} onChange={(e) => updateNote(activeNote.id, { title: e.target.value })} />
                 </div>
                 <div style={{ display: 'flex', gap: 4 }}>
-                  <button className={`btn-icon ${isSummarizing ? 'animate-pulse' : ''}`} onClick={handleAISummary} title="AI Summary">
-                    <Sparkles size={18} color={isSummarizing ? 'var(--accent-color)' : 'inherit'} />
+                  <button className="btn-icon" onClick={() => setShowReminderModal(true)} title="Set Reminder">
+                    <Bell size={18} color={activeNote.reminderDate ? 'var(--accent-color)' : 'inherit'} />
                   </button>
-                  <button className="btn-icon" onClick={copyToClipboard} title="Copy to Clipboard">
-                    {copyStatus ? <Check size={18} color="var(--success)" /> : <Copy size={18} />}
+                  <button className="btn-icon" onClick={() => setShowLockModal(true)} title="Secure Note">
+                    {activeNote.password ? <Lock size={18} color="var(--danger)" /> : <Unlock size={18} />}
                   </button>
-                  <button className="btn-icon" onClick={() => setFontSize(FONT_SIZES[(FONT_SIZES.indexOf(fontSize) + 1) % FONT_SIZES.length])}>
-                    <Type size={18} />
-                  </button>
-                  <button className="btn-icon" onClick={(e) => confirmDelete(activeNote.id, e, activeNote.isDeleted)}>
-                    <Trash2 size={18} />
-                  </button>
+                  <button className="btn-icon" onClick={handleExport} title="Export to MD"><Download size={18} /></button>
+                  <button className="btn-icon" onClick={copyToClipboard} title="Copy Content">{copyStatus ? <Check size={18} color="var(--success)" /> : <Copy size={18} />}</button>
+                  
+                  <div style={{ display: 'flex', alignItems: 'center', background: 'var(--surface-color)', padding: '0 8px', borderRadius: '8px', border: '1px solid var(--border-color)', marginLeft: '4px' }}>
+                    <Type size={14} style={{ color: 'var(--text-secondary)', marginRight: '4px' }} />
+                    <select 
+                      value={fontSize} 
+                      onChange={(e) => setFontSize(e.target.value)}
+                      style={{ background: 'transparent', border: 'none', color: 'var(--text-primary)', fontSize: '0.8rem', cursor: 'pointer', outline: 'none', padding: '4px 0' }}
+                    >
+                      {FONT_SIZES.map(f => <option key={f.id} value={f.id} style={{ background: 'var(--surface-color)' }}>{f.label}</option>)}
+                    </select>
+                  </div>
+
+                  <button className="btn-icon" onClick={(e) => confirmDelete(activeNote.id, e, activeNote.isDeleted)}><Trash2 size={18} /></button>
                 </div>
               </div>
               <div className="editor-toolbar">
@@ -347,14 +376,6 @@ function App() {
               </div>
             </div>
             <div className="editor-content scroll-hide">
-              <AnimatePresence>
-                {activeNote.summary && (
-                  <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="ai-summary-box">
-                    <p style={{ fontSize: '0.9rem', lineHeight: 1.6 }}>{activeNote.summary}</p>
-                    <button style={{ position: 'absolute', bottom: 8, right: 12, fontSize: '0.7rem', color: 'var(--accent-color)' }} onClick={() => updateNote(activeNote.id, { summary: null })}>Clear</button>
-                  </motion.div>
-                )}
-              </AnimatePresence>
               <textarea 
                 className={`note-textarea font-size-${fontSize}`} 
                 placeholder="Start writing..." 
@@ -363,20 +384,19 @@ function App() {
               />
             </div>
             <div className="word-count-bar">
-              <span><b>{stats.words}</b> words</span>
-              <span><b>{stats.chars}</b> characters</span>
-              <span style={{ marginLeft: 'auto', opacity: 0.5 }}>Last edited: {new Date(activeNote.lastModified).toLocaleString()}</span>
+              <span><b>{stats.words}</b> words | <b>{stats.chars}</b> chars</span>
+              <div className={`cloud-icon ${isSyncing ? 'syncing' : ''}`} style={{ marginLeft: 'auto' }}>
+                <Cloud size={14} /> <span>{isSyncing ? 'Syncing...' : 'Synced'}</span>
+              </div>
             </div>
           </>
         ) : (
-          <div className="empty-state" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
-            <div style={{ opacity: 0.1, marginBottom: 24 }}>
+          <div className="empty-state" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', textAlign: 'center' }}>
+            <div style={{ opacity: 0.05, marginBottom: 24 }}>
               <FileText size={160} style={{ color: 'var(--text-primary)' }} />
             </div>
             <h2 style={{ fontSize: '1.5rem', fontWeight: '600', marginBottom: 8, opacity: 0.8 }}>Pick a note to edit</h2>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '1rem', opacity: 0.6 }}>
-              Your notes are synced in real-time across all devices.
-            </p>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '1rem', opacity: 0.6 }}>Synced in real-time across devices.</p>
           </div>
         )}
       </main>
@@ -393,6 +413,65 @@ function App() {
             <div className="form-actions">
               <button onClick={() => setShowNoteModal(false)}>Cancel</button>
               <button className="btn-primary" onClick={handleCreateNote}>Create Note</button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Security Modal */}
+      {showLockModal && (
+        <div className="modal-overlay">
+          <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="modal-content">
+            <h2>Secure Note</h2>
+            <div className="form-group">
+              <label>Set Password (Leave blank to remove)</label>
+              <input 
+                type="text" 
+                className="form-input" 
+                placeholder="Enter password" 
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    updateNote(activeNote.id, { password: e.target.value || null });
+                    setShowLockModal(false);
+                  }
+                }}
+              />
+            </div>
+            <div className="form-actions">
+              <button onClick={() => setShowLockModal(false)}>Close</button>
+              <button className="btn-primary" onClick={(e) => {
+                const val = e.target.parentElement.previousElementSibling.querySelector('input').value;
+                updateNote(activeNote.id, { password: val || null });
+                setShowLockModal(false);
+              }}>Save Password</button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Reminder Modal */}
+      {showReminderModal && (
+        <div className="modal-overlay">
+          <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="modal-content">
+            <h2>Set Reminder</h2>
+            <div className="form-group">
+              <label>Reminder Time</label>
+              <input 
+                type="datetime-local" 
+                className="form-input" 
+                onChange={(e) => {
+                  const date = new Date(e.target.value).getTime();
+                  updateNote(activeNote.id, { reminderDate: date, reminderFired: false });
+                  setShowReminderModal(false);
+                }}
+              />
+            </div>
+            <div className="form-actions">
+              <button onClick={() => {
+                updateNote(activeNote.id, { reminderDate: null, reminderFired: false });
+                setShowReminderModal(false);
+              }}>Clear Reminder</button>
+              <button onClick={() => setShowReminderModal(false)}>Close</button>
             </div>
           </motion.div>
         </div>
