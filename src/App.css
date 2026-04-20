@@ -309,6 +309,58 @@ input, textarea {
 .editor.bg-forest { background: linear-gradient(135deg, #10b981 0%, #064e3b 100%); }
 .editor.bg-glass { background: rgba(255, 255, 255, 0.05); backdrop-filter: blur(20px); }
 
+.kanban-container {
+  display: flex;
+  gap: 20px;
+  padding: 24px;
+  overflow-x: auto;
+  height: 100%;
+  background: var(--bg-color);
+}
+
+.kanban-column {
+  min-width: 300px;
+  max-width: 300px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-color);
+}
+
+.kanban-column h2 {
+  padding: 16px;
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--accent-color);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.kanban-notes {
+  flex: 1;
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.markdown-preview {
+  padding: 32px;
+  line-height: 1.8;
+  color: var(--text-primary);
+  overflow-y: auto;
+}
+
+.markdown-preview h1 { border-bottom: 2px solid var(--border-color); padding-bottom: 8px; margin-bottom: 16px; font-size: 2rem; }
+.markdown-preview h2 { border-bottom: 1px solid var(--border-color); padding-bottom: 4px; margin-top: 24px; margin-bottom: 12px; font-size: 1.5rem; }
+.markdown-preview p { margin-bottom: 16px; }
+.markdown-preview ul { margin-left: 20px; margin-bottom: 16px; }
+.markdown-preview code { background: var(--surface-hover); padding: 2px 6px; border-radius: 4px; font-family: monospace; }
+
+.font-sans { font-family: 'Outfit', sans-serif; }
+.font-serif { font-family: 'Georgia', serif; }
+.font-mono { font-family: 'Courier New', monospace; }
+.font-hand { font-family: 'Comic Sans MS', cursive; }
+
 .word-count-bar {
   padding: 12px 32px;
   border-top: 1px solid var(--border-color);
